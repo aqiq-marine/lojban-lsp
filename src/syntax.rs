@@ -1,9 +1,16 @@
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
 pub enum SyntaxKind {
-    // Terminals
+    // Lossless terminals / trivia
     Whitespace = 0,
-    
+    Newline,
+    Word,
+    Pause,
+    Invalid,
+    Eof,
+    Number,
+    Operator,
+
     // Non-terminals
     Text,
     Paragraph,
@@ -24,9 +31,23 @@ pub enum SyntaxKind {
     Cmavo,
     FreeModifier,
     Prenex,
+    RelativeClause,
+    Tanru,
+    LogicalConnective,
+    SentenceConnective,
+    GekSentence,
+    Terms,
+    TailTerms,
+    LinkArgs,
+    PlaceTag,
+    Indicator,
+    Vocative,
     Cmene,
     Bridi,
-    
+    Mex,
+    Operand,
+    MexOperator,
+
     // Errors
     Error,
 }

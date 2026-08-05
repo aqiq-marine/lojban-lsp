@@ -1,65 +1,130 @@
-use crate::morphology;
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Token<'a> {
-    LA(&'a str),
-    CU,
-    CMENE(&'a str),
-    BRIVLA(&'a str),
-    CMAVO(&'a str),
-    KOhA(&'a str),
-    LE(&'a str),
-    DUhU,
-    NU,
-    KA,
-    PAUSE,
-    EOF,
+/// A byte range in the original document.
+///
+/// Keeping byte offsets (rather than character indices) makes the range
+/// directly usable with Rust string slices and with rowan's text offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextRange {
+    pub start: usize,
+    pub end: usize,
 }
 
-pub fn tokenize(input: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut chars = input.char_indices().peekable();
+impl TextRange {
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+}
 
-    while let Some((idx, c)) = chars.peek().cloned() {
-        match c {
-            '.' => {
-                tokens.push(Token::PAUSE);
-                chars.next();
-            }
-            ' ' | '\t' | '\n' | '\r' => {
-                chars.next();
-            }
-            _ => {
-                let start = idx;
-                let mut end = idx;
-                while let Some((i, c)) = chars.peek().cloned() {
-                    if c.is_alphabetic() || c == '\'' {
-                        end = i + c.len_utf8();
-                        chars.next();
-                    } else {
-                        break;
-                    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
+    Word,
+    Number,
+    Operator,
+    Pause,
+    Whitespace,
+    Newline,
+    Invalid,
+    Eof,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LexToken<'a> {
+    pub kind: TokenKind,
+    pub text: &'a str,
+    pub range: TextRange,
+}
+
+/// Lossless lexical scan used by the future CST parser and by the LSP.
+/// Trivia is deliberately retained; the old `tokenize` API below is kept as
+/// a compatibility adapter for the first parser migration step.
+pub fn lex_lossless(input: &str) -> Vec<LexToken<'_>> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    while offset < input.len() {
+        let start = offset;
+        let ch = input[offset..]
+            .chars()
+            .next()
+            .expect("valid UTF-8 boundary");
+        if ch == '.' {
+            offset += ch.len_utf8();
+            result.push(LexToken {
+                kind: TokenKind::Pause,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
+        } else if ch == '\n' {
+            offset += 1;
+            result.push(LexToken {
+                kind: TokenKind::Newline,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
+        } else if ch.is_whitespace() {
+            offset += ch.len_utf8();
+            while offset < input.len() {
+                let next = input[offset..].chars().next().unwrap();
+                if next == '\n' || !next.is_whitespace() {
+                    break;
                 }
-                if start < end {
-                    let s = &input[start..end];
-                    match s {
-                        "la" => tokens.push(Token::LA(s)),
-                        "cu" => tokens.push(Token::CU),
-                        "mi" | "do" | "da" | "ti" | "ta" | "tu" => tokens.push(Token::KOhA(s)),
-                        "le" | "lo" => tokens.push(Token::LE(s)),
-                        "du'u" => tokens.push(Token::DUhU),
-                        "nu" => tokens.push(Token::NU),
-                        "ka" => tokens.push(Token::KA),
-                        _ if morphology::is_cmene(s) => tokens.push(Token::CMENE(s)),
-                        _ if morphology::is_gismu(s) => tokens.push(Token::BRIVLA(s)),
-                        _ => tokens.push(Token::BRIVLA(s)),
-                    }
-                }
+                offset += next.len_utf8();
             }
+            result.push(LexToken {
+                kind: TokenKind::Whitespace,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
+        } else if ch.is_alphabetic() || ch == '\'' {
+            offset += ch.len_utf8();
+            while offset < input.len() {
+                let next = input[offset..].chars().next().unwrap();
+                if !next.is_alphabetic() && next != '\'' {
+                    break;
+                }
+                offset += next.len_utf8();
+            }
+            let text = &input[start..offset];
+            result.push(LexToken {
+                kind: TokenKind::Word,
+                text,
+                range: TextRange::new(start, offset),
+            });
+        } else if ch.is_ascii_digit() {
+            offset += ch.len_utf8();
+            while offset < input.len()
+                && input[offset..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit() || c == '.')
+            {
+                offset += input[offset..].chars().next().unwrap().len_utf8();
+            }
+            result.push(LexToken {
+                kind: TokenKind::Number,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
+        } else if matches!(ch, '+' | '-' | '*' | '/' | '^' | '(' | ')' | '=') {
+            offset += ch.len_utf8();
+            result.push(LexToken {
+                kind: TokenKind::Operator,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
+        } else {
+            offset += ch.len_utf8();
+            result.push(LexToken {
+                kind: TokenKind::Invalid,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
         }
     }
-    tokens.push(Token::EOF);
-    tokens
+    result.push(LexToken {
+        kind: TokenKind::Eof,
+        text: "",
+        range: TextRange::new(input.len(), input.len()),
+    });
+    result
 }
 
 #[cfg(test)]
@@ -67,19 +132,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tokenize_la_alis_djuno() {
-        let input = "la .alis. djuno";
-        let tokens = tokenize(input);
-        assert_eq!(
-            tokens,
-            vec![
-                Token::LA("la"),
-                Token::PAUSE,
-                Token::CMENE("alis"),
-                Token::PAUSE,
-                Token::BRIVLA("djuno"),
-                Token::EOF
-            ]
-        );
+    fn lossless_lexer_keeps_trivia_and_ranges() {
+        let tokens = lex_lossless("mi\n klama.");
+        assert_eq!(tokens[0].kind, TokenKind::Word);
+        assert_eq!(tokens[0].text, "mi");
+        assert_eq!(tokens[0].range, TextRange::new(0, 2));
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+        assert_eq!(tokens[2].kind, TokenKind::Whitespace);
+        assert_eq!(tokens[3].text, "klama");
+        assert_eq!(tokens[4].kind, TokenKind::Pause);
+        assert_eq!(tokens.last().unwrap().kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn lossless_lexer_reports_invalid_input_without_dropping_it() {
+        let tokens = lex_lossless("mi @ do");
+        let invalid = tokens
+            .iter()
+            .find(|token| token.kind == TokenKind::Invalid)
+            .unwrap();
+        assert_eq!(invalid.text, "@");
+        assert_eq!(invalid.range, TextRange::new(3, 4));
     }
 }
