@@ -1,0 +1,8 @@
+[package]
+name = "lojban_parser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peg = "0.8.6"
+rowan = "0.17.0"
