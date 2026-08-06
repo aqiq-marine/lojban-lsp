@@ -92,9 +92,7 @@ post_clause
 pre_clause
 PU_clause
 RAhO_clause
-relative_clause
 ROI_clause
-rp_clause
 SA_clause
 SE_clause
 SEhU_clause

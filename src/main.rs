@@ -6,6 +6,10 @@ pub mod lexer;
 pub mod lsp;
 pub mod morphology;
 pub mod parser;
+#[cfg(test)]
+mod repro_i_mi_klama;
+#[cfg(test)]
+mod repro_mi_ka;
 pub mod semantic;
 pub mod syntax;
 

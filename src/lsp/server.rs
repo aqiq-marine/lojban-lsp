@@ -1,4 +1,7 @@
-use crate::{ParserOptions, features::ExpectedRule, lsp::document::DocumentManager};
+use crate::{
+    ParserOptions,
+    lsp::{completion, dictionary::BasicDictionary, document::DocumentManager},
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::*;
@@ -67,7 +70,7 @@ impl LanguageServer for Backend {
         let guard = self.documents.read().await;
         Ok(guard
             .get(&q.text_document.uri)
-            .and_then(|d| d.hover(q.position.character)))
+            .and_then(|d| d.hover(d.offset(q.position))))
     }
     async fn completion(
         &self,
@@ -78,20 +81,21 @@ impl LanguageServer for Backend {
         let Some(d) = guard.get(&q.text_document.uri) else {
             return Ok(None);
         };
-        let expected = d.completion_rules(q.position.character);
-        let mut out = Vec::new();
-        for rule in expected {
-            let words: &[&str] = match rule {
-                ExpectedRule::Sumti => &["le", "lo", "la", "mi", "do"],
-                ExpectedRule::Selbri => &["broda", "goha"],
-                _ => &[],
-            };
-            out.extend(
-                words
-                    .iter()
-                    .map(|w| CompletionItem::new_simple((*w).into(), format!("{:?}", rule))),
-            );
-        }
+        let offset = d.offset(q.position);
+        let prefix = d.source()[..offset as usize]
+            .split_whitespace()
+            .last()
+            .unwrap_or("");
+        let dictionary = BasicDictionary;
+        let expected = d.completion_rules(offset);
+        let out = completion::candidates_with_prefix(prefix, &expected, &dictionary)
+            .into_iter()
+            .map(|entry| CompletionItem {
+                label: entry.word,
+                detail: Some(entry.description),
+                ..Default::default()
+            })
+            .collect();
         Ok(Some(CompletionResponse::Array(out)))
     }
 }
@@ -105,17 +109,13 @@ impl Backend {
                     .into_iter()
                     .map(|x| Diagnostic {
                         range: Range {
-                            start: Position {
-                                line: 0,
-                                character: x.range.start().into(),
-                            },
-                            end: Position {
-                                line: 0,
-                                character: x.range.end().into(),
-                            },
+                            start: d.position(x.range.start().into()),
+                            end: d.position(x.range.end().into()),
                         },
                         severity: Some(DiagnosticSeverity::ERROR),
                         message: x.message,
+                        code: Some(NumberOrString::String(x.code.into())),
+                        source: Some("lojban".into()),
                         ..Default::default()
                     })
                     .collect()

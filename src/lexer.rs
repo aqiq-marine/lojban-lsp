@@ -52,8 +52,28 @@ pub fn lex_lossless(input: &str) -> Vec<LexToken<'_>> {
                 text: &input[start..offset],
                 range: TextRange::new(start, offset),
             });
+        } else if ch == ',' {
+            // Commas are pronunciation aids, not grammar tokens. Preserve
+            // them losslessly as trivia so the parser never has to handle
+            // them as syntax.
+            offset += ch.len_utf8();
+            result.push(LexToken {
+                kind: TokenKind::Whitespace,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
         } else if ch == '\n' {
             offset += 1;
+            result.push(LexToken {
+                kind: TokenKind::Newline,
+                text: &input[start..offset],
+                range: TextRange::new(start, offset),
+            });
+        } else if ch == '\r' {
+            offset += 1;
+            if offset < input.len() && input[offset..].chars().next() == Some('\n') {
+                offset += 1;
+            }
             result.push(LexToken {
                 kind: TokenKind::Newline,
                 text: &input[start..offset],
@@ -63,7 +83,7 @@ pub fn lex_lossless(input: &str) -> Vec<LexToken<'_>> {
             offset += ch.len_utf8();
             while offset < input.len() {
                 let next = input[offset..].chars().next().unwrap();
-                if next == '\n' || !next.is_whitespace() {
+                if next == '\n' || next == '\r' || !next.is_whitespace() {
                     break;
                 }
                 offset += next.len_utf8();
@@ -132,6 +152,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lossless_lexer_handles_crlf_sentence() {
+        let tokens = lex_lossless(".i mi klama\r\n.i mi pu klama le zarci");
+        let newline = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::Newline)
+            .unwrap();
+        assert_eq!(newline.text, "\r\n");
+    }
+
+    #[test]
+    fn lossless_lexer_handles_crlf() {
+        let tokens = lex_lossless("mi\r\nklama");
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+        assert_eq!(tokens[1].text, "\r\n");
+        assert_eq!(tokens[1].range, TextRange::new(2, 4));
+        assert_eq!(tokens[2].text, "klama");
+    }
+
+    #[test]
+    fn lossless_lexer_handles_cr() {
+        let tokens = lex_lossless("mi\rklama");
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+        assert_eq!(tokens[1].text, "\r");
+        assert_eq!(tokens[1].range, TextRange::new(2, 3));
+        assert_eq!(tokens[2].text, "klama");
+    }
+
+    #[test]
     fn lossless_lexer_keeps_trivia_and_ranges() {
         let tokens = lex_lossless("mi\n klama.");
         assert_eq!(tokens[0].kind, TokenKind::Word);
@@ -153,5 +201,21 @@ mod tests {
             .unwrap();
         assert_eq!(invalid.text, "@");
         assert_eq!(invalid.range, TextRange::new(3, 4));
+    }
+
+    #[test]
+    fn commas_are_preserved_as_trivia() {
+        let tokens = lex_lossless("k,l,a,m,a");
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| token.text == "," && token.kind == TokenKind::Invalid)
+        );
+        assert!(
+            tokens
+                .iter()
+                .filter(|token| token.text == ",")
+                .all(|token| token.kind == TokenKind::Whitespace)
+        );
     }
 }

@@ -24,22 +24,48 @@ pub enum ExpectedRule {
     KU,
     VAU,
     KEI,
+    Quote,
+    Tag,
+    EditingMarker,
 }
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub kind: DiagnosticKind,
+    pub code: &'static str,
     pub message: String,
     pub range: rowan::TextRange,
 }
 
 pub fn diagnostics(parse: &Parse) -> Vec<Diagnostic> {
-    let root = parse.syntax();
-    root.descendants()
-        .filter(|n| n.kind() == SyntaxKind::Error)
-        .map(|n| Diagnostic {
-            kind: DiagnosticKind::SyntaxError,
-            message: "syntax error".into(),
-            range: n.text_range(),
+    parse
+        .errors
+        .iter()
+        .map(|error| {
+            let (code, expected) = match error.kind {
+                crate::cst::ErrorKind::ExpectedSelbri => ("LOJ002", "expected selbri"),
+                crate::cst::ErrorKind::ExpectedSumti => ("LOJ003", "expected sumti"),
+                crate::cst::ErrorKind::ExpectedBridi => ("LOJ004", "expected bridi"),
+                crate::cst::ErrorKind::ExpectedCmevla => ("LOJ005", "expected cmevla"),
+                crate::cst::ErrorKind::UnexpectedToken => ("LOJ001", "unexpected token"),
+                crate::cst::ErrorKind::SyntaxError => ("LOJ000", "syntax error"),
+            };
+            let found = error
+                .found
+                .map(|kind| format!(", found {kind:?}"))
+                .unwrap_or_default();
+            Diagnostic {
+                kind: match error.kind {
+                    crate::cst::ErrorKind::UnexpectedToken => DiagnosticKind::UnexpectedToken,
+                    crate::cst::ErrorKind::ExpectedSelbri
+                    | crate::cst::ErrorKind::ExpectedSumti
+                    | crate::cst::ErrorKind::ExpectedBridi
+                    | crate::cst::ErrorKind::ExpectedCmevla => DiagnosticKind::ExpectedToken,
+                    crate::cst::ErrorKind::SyntaxError => DiagnosticKind::SyntaxError,
+                },
+                code,
+                message: format!("{expected}{found}"),
+                range: crate::cst::rowan_range(error.range),
+            }
         })
         .collect()
 }
@@ -66,6 +92,9 @@ pub fn completion_context<'a>(
             SyntaxKind::Terms => vec![ExpectedRule::Sumti, ExpectedRule::Selbri],
             SyntaxKind::Sumti => vec![ExpectedRule::Sumti],
             SyntaxKind::Selbri => vec![ExpectedRule::Selbri],
+            SyntaxKind::Quoting => vec![ExpectedRule::Quote],
+            SyntaxKind::Tag => vec![ExpectedRule::Tag],
+            SyntaxKind::EditingMarker => vec![ExpectedRule::EditingMarker],
             _ => vec![ExpectedRule::Sentence],
         })
         .unwrap_or_else(|| vec![ExpectedRule::Sentence]);
@@ -92,5 +121,22 @@ mod tests {
         let context = completion_context(&ast, &model, 1);
         assert!(context.current.is_some());
         assert!(!context.expected.is_empty());
+    }
+
+    #[test]
+    fn classifies_unexpected_tokens_and_editor_nodes() {
+        let invalid = parse("mi", ParserOptions::default());
+        assert!(
+            invalid
+                .diagnostics()
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::ExpectedToken)
+        );
+
+        let quoted = parse("mi cusku lu mi klama li'u", ParserOptions::default());
+        let model = quoted.semantic_model();
+        let ast = quoted.ast();
+        let context = completion_context(&ast, &model, 11);
+        assert!(context.expected.contains(&ExpectedRule::Quote));
     }
 }

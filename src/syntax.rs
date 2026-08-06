@@ -30,6 +30,7 @@ pub enum SyntaxKind {
     Abstractor,
     Cmavo,
     FreeModifier,
+    EditingMarker,
     Prenex,
     RelativeClause,
     Tanru,

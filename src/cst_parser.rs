@@ -1,4 +1,4 @@
-use crate::cst::{Event, Parse, build_green};
+use crate::cst::{ErrorKind, Event, Parse, build_green};
 use crate::lexer::{LexToken, TokenKind, lex_lossless};
 use crate::syntax::SyntaxKind;
 
@@ -28,6 +28,15 @@ pub fn parse(source: &str, options: ParserOptions) -> Parse {
     };
     p.start(SyntaxKind::Paragraph);
     p.start(SyntaxKind::Statement);
+    // Sentence-initial `.i` is one of the grammar positions where a pause
+    // is explicitly permitted. Keep the pause in the CST, but consume it
+    // together with the connective rather than treating it as trivia.
+    if p.at_pause() && p.peek_text(1) == Some("i") {
+        p.emit_current();
+        p.skip_trivia();
+        p.emit_current();
+        p.skip_trivia();
+    }
     p.parse_sentence();
     while p.current_text().is_some_and(|s| s == "i" || s == "gi") {
         p.start(SyntaxKind::SentenceConnective);
@@ -97,6 +106,17 @@ impl<'a> Parser<'a> {
             self.skip_trivia();
             self.finish();
         }
+        // An abstractor starts a sumti, but it is only complete when its
+        // inner bridi has also been parsed. Do not consume it as a selbri.
+        if self
+            .current_text()
+            .is_some_and(|s| matches!(s, "nu" | "du'u" | "ka"))
+        {
+            self.parse_sumti();
+            self.start(SyntaxKind::TailTerms);
+            self.finish();
+            return;
+        }
         if self.current_word().is_some() {
             self.parse_selbri();
         } else {
@@ -115,7 +135,11 @@ impl<'a> Parser<'a> {
                 break;
             }
             if self.tokens[self.pos].kind == TokenKind::Word {
-                if self.is_indicator() {
+                if self.current_text() == Some("soi") {
+                    self.parse_free_modifier();
+                } else if self.is_editing_marker() {
+                    self.parse_editing_marker();
+                } else if self.is_indicator() {
                     self.start(SyntaxKind::Indicator);
                     self.emit_current();
                     self.finish();
@@ -138,6 +162,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.finish();
+        self.consume_optional_terminator();
     }
 
     fn parse_sentence(&mut self) {
@@ -149,6 +174,7 @@ impl<'a> Parser<'a> {
             return;
         }
         self.parse_vocative();
+        self.parse_free_modifier();
         self.start(SyntaxKind::Sentence);
         self.start(SyntaxKind::Bridi);
         self.parse_prenex();
@@ -194,7 +220,7 @@ impl<'a> Parser<'a> {
         self.start(SyntaxKind::Selbri);
         if self
             .current_text()
-            .is_some_and(|s| matches!(s, "se" | "te" | "ve" | "xe"))
+            .is_some_and(|s| matches!(s, "se" | "te" | "ve" | "xe" | "jai"))
         {
             self.emit_current();
             self.skip_trivia();
@@ -226,7 +252,10 @@ impl<'a> Parser<'a> {
                 && !self.is_sumti_start()
                 && !self.is_place_tag()
                 && !self.is_indicator()
-                && !matches!(self.current_text(), Some("cu" | "i" | "gi"))
+                && !matches!(
+                    self.current_text(),
+                    Some("cu" | "i" | "gi" | "soi" | "sa" | "si" | "su" | "faho")
+                )
             {
                 self.emit_current();
             } else {
@@ -275,12 +304,22 @@ impl<'a> Parser<'a> {
     fn parse_sumti(&mut self) {
         self.start(SyntaxKind::Sumti);
         self.skip_trivia();
-        if self.current_text() == Some("li") {
+        if self
+            .current_text()
+            .is_some_and(|s| matches!(s, "nu" | "du'u" | "ka"))
+        {
+            self.parse_abstraction();
+        } else if self.current_text() == Some("li") {
             self.emit_current();
             self.parse_mex();
             if self.is_one_of(&["lo'o", "loho"]) {
                 self.emit_current();
             }
+        } else if self
+            .current_text()
+            .is_some_and(|s| matches!(s, "zo" | "lu" | "lo'u"))
+        {
+            self.parse_quoting();
         } else if self.current_text() == Some("vei") {
             self.parse_grouped_mex("ve'o");
         } else if self
@@ -304,26 +343,14 @@ impl<'a> Parser<'a> {
             self.skip_trivia();
             // cmevla is surrounded by pauses in the ordinary spelling:
             // `la .alis.`. The pauses belong to the lossless CST.
-            if self
-                .tokens
-                .get(self.pos)
-                .is_some_and(|t| t.kind == TokenKind::Pause)
-            {
-                self.emit_current();
-            }
+            self.consume_optional_pause();
             self.skip_trivia();
             if self.current_word().is_some() {
                 self.emit_current();
             } else {
                 self.error_at_current("expected cmevla after LA");
             }
-            if self
-                .tokens
-                .get(self.pos)
-                .is_some_and(|t| t.kind == TokenKind::Pause)
-            {
-                self.emit_current();
-            }
+            self.consume_optional_pause();
         } else if self.current_word().is_some() {
             self.emit_current();
         }
@@ -497,6 +524,35 @@ impl<'a> Parser<'a> {
         self.finish();
     }
 
+    fn parse_free_modifier(&mut self) {
+        if self.current_text() != Some("soi") {
+            return;
+        }
+        self.start(SyntaxKind::FreeModifier);
+        self.emit_current();
+        self.skip_trivia();
+        if self.is_sumti_start() {
+            self.parse_sumti();
+        }
+        self.finish();
+    }
+
+    fn is_editing_marker(&self) -> bool {
+        self.current_text()
+            .is_some_and(|s| matches!(s, "sa" | "si" | "su" | "faho"))
+    }
+
+    fn parse_editing_marker(&mut self) {
+        self.start(SyntaxKind::EditingMarker);
+        let marker = self.current_text().map(str::to_owned);
+        self.emit_current();
+        self.skip_trivia();
+        if marker.as_deref() == Some("sa") && self.current_word().is_some() {
+            self.emit_current();
+        }
+        self.finish();
+    }
+
     fn parse_tags(&mut self) {
         loop {
             self.skip_trivia();
@@ -529,7 +585,22 @@ impl<'a> Parser<'a> {
         self.current_text().is_some_and(|s| {
             matches!(
                 s,
-                "mi" | "do" | "da" | "ti" | "ta" | "tu" | "le" | "lo" | "la" | "li" | "vei"
+                "mi" | "do"
+                    | "da"
+                    | "ti"
+                    | "ta"
+                    | "tu"
+                    | "le"
+                    | "lo"
+                    | "la"
+                    | "li"
+                    | "vei"
+                    | "nu"
+                    | "du'u"
+                    | "ka"
+                    | "zo"
+                    | "lu"
+                    | "lo'u"
             )
         })
     }
@@ -550,6 +621,11 @@ impl<'a> Parser<'a> {
                 s,
                 "pu" | "ba"
                     | "ca"
+                    | "ca'a"
+                    | "pu'o"
+                    | "ba'o"
+                    | "co'a"
+                    | "co'u"
                     | "za"
                     | "zi"
                     | "vi"
@@ -568,6 +644,13 @@ impl<'a> Parser<'a> {
                     | "bu'a"
                     | "bu'u"
                     | "ne'u"
+                    | "roi"
+                    | "ki"
+                    | "fe'e"
+                    | "bai"
+                    | "bau"
+                    | "fi'o"
+                    | "jai"
             )
         })
     }
@@ -625,12 +708,35 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Pause is lossless lexical information, not trivia. Consume it only
+    /// from grammar rules that explicitly allow a word-initial boundary.
+    fn consume_optional_pause(&mut self) {
+        if self
+            .tokens
+            .get(self.pos)
+            .is_some_and(|token| token.kind == TokenKind::Pause)
+        {
+            self.emit_current();
+        }
+    }
+
+    fn at_pause(&self) -> bool {
+        self.tokens
+            .get(self.pos)
+            .is_some_and(|token| token.kind == TokenKind::Pause)
+    }
+
+    fn peek_text(&self, distance: usize) -> Option<&str> {
+        self.tokens.get(self.pos + distance).map(|token| token.text)
+    }
+
     fn emit_current(&mut self) {
         if let Some(token) = self.tokens.get(self.pos).copied() {
             let kind = crate::parser::tokens::syntax_kind(token.kind);
             if token.kind == TokenKind::Invalid {
                 self.events.push(Event::Error {
                     token_index: Some(self.pos as u32),
+                    kind: ErrorKind::UnexpectedToken,
                 });
             } else {
                 self.events.push(Event::Token {
@@ -645,17 +751,36 @@ impl<'a> Parser<'a> {
     fn consume_error(&mut self, _message: &str) {
         let _recovery_enabled = self.recovery;
         if self.tokens.get(self.pos).is_some() {
-            crate::parser::recovery::error_at(&mut self.events, Some(self.pos));
+            crate::parser::recovery::error_at(
+                &mut self.events,
+                Some(self.pos),
+                ErrorKind::UnexpectedToken,
+            );
             self.pos += 1;
         }
     }
 
     fn error_at_current(&mut self, _message: &str) {
+        let kind = self.error_kind(_message);
         if self.tokens.get(self.pos).is_some() {
-            crate::parser::recovery::error_at(&mut self.events, Some(self.pos));
+            crate::parser::recovery::error_at(&mut self.events, Some(self.pos), kind);
             self.pos += 1;
         } else {
-            crate::parser::recovery::error_at(&mut self.events, None);
+            crate::parser::recovery::error_at(&mut self.events, None, kind);
+        }
+    }
+
+    fn error_kind(&self, message: &str) -> ErrorKind {
+        if message.contains("selbri") {
+            ErrorKind::ExpectedSelbri
+        } else if message.contains("bridi") {
+            ErrorKind::ExpectedBridi
+        } else if message.contains("cmevla") {
+            ErrorKind::ExpectedCmevla
+        } else if message.contains("sumti") {
+            ErrorKind::ExpectedSumti
+        } else {
+            ErrorKind::SyntaxError
         }
     }
 
@@ -793,6 +918,8 @@ impl<'a> Parser<'a> {
                 self.skip_trivia();
             }
             self.consume_optional("boi", "optional BOI after number");
+            self.consume_optional("moi", "optional MOI after number");
+            self.consume_optional("mai", "optional MAI after number");
             self.finish();
         } else if text == "ge" || text == "ga" || text == "go" || text == "gu" {
             self.parse_gek_operand();
@@ -817,6 +944,14 @@ impl<'a> Parser<'a> {
                 self.skip_trivia();
             }
             self.consume_optional("foi", "expected FOI after TEI lerfu string");
+            self.finish();
+        } else if text == "nu'a" {
+            self.start(SyntaxKind::PrefixMex);
+            self.emit_current();
+            self.skip_trivia();
+            if self.current_text().is_some() {
+                self.emit_current();
+            }
             self.finish();
         } else if self.is_lerfu_word(text.as_str()) {
             self.start(SyntaxKind::Operand);
@@ -925,6 +1060,44 @@ impl<'a> Parser<'a> {
 
     fn consume_optional(&mut self, token: &str, _message: &str) {
         if self.is_one_of(&[token]) {
+            self.emit_current();
+        }
+    }
+
+    fn parse_quoting(&mut self) {
+        self.start(SyntaxKind::Quoting);
+        let opener = self.current_text().map(str::to_owned);
+        self.emit_current();
+        self.skip_trivia();
+        if opener.as_deref() == Some("zo") {
+            if self.current_word().is_some() {
+                self.emit_current();
+            }
+        } else {
+            let closer = if opener.as_deref() == Some("lu") {
+                "li'u"
+            } else {
+                "le'u"
+            };
+            while self.pos < self.tokens.len() {
+                if self.current_text() == Some(closer) {
+                    self.emit_current();
+                    break;
+                }
+                if self.tokens[self.pos].kind == TokenKind::Eof {
+                    break;
+                }
+                self.emit_current();
+            }
+        }
+        self.finish();
+    }
+
+    fn consume_optional_terminator(&mut self) {
+        if self
+            .current_text()
+            .is_some_and(|s| matches!(s, "ku" | "kei" | "do'u" | "ku'o" | "tu'u" | "li'u" | "le'u"))
+        {
             self.emit_current();
         }
     }
@@ -1194,7 +1367,13 @@ mod tests {
 
     #[test]
     fn parses_tense_and_space_tags() {
-        for source in ["pu mi klama", "mi pu klama", "ba vi klama"] {
+        for source in [
+            "pu mi klama",
+            "mi pu klama",
+            "ba vi klama",
+            "ca'a mi klama",
+            "mi roi klama",
+        ] {
             let parsed = parse(source);
             assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
             assert!(
@@ -1202,6 +1381,75 @@ mod tests {
                     .syntax()
                     .descendants()
                     .any(|n| n.kind() == SyntaxKind::Tag)
+            );
+        }
+    }
+
+    #[test]
+    fn parses_common_quoting_forms() {
+        for source in [
+            "mi cusku zo klama",
+            "mi cusku lu mi klama li'u",
+            "mi cusku lo'u mi klama le'u",
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+            assert!(
+                parsed
+                    .syntax()
+                    .descendants()
+                    .any(|n| n.kind() == SyntaxKind::Quoting)
+            );
+        }
+    }
+
+    #[test]
+    fn parses_free_modifiers_and_modal_tags() {
+        for source in [
+            "mi klama soi do",
+            "mi bai klama",
+            "mi fi'o klama",
+            "jai gau klama",
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+        }
+        let parsed = parse("mi klama soi do");
+        assert!(
+            parsed
+                .syntax()
+                .descendants()
+                .any(|n| n.kind() == SyntaxKind::FreeModifier)
+        );
+    }
+
+    #[test]
+    fn parses_extended_mex_forms() {
+        for source in [
+            "li 1 moi lo'o du",
+            "li 2 mai lo'o du",
+            "li tei by ce'u foi lo'o du",
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+        }
+    }
+
+    #[test]
+    fn preserves_editing_markers() {
+        for source in [
+            "mi klama sa tavla",
+            "mi klama si",
+            "mi klama su",
+            "mi klama faho",
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+            assert!(
+                parsed
+                    .syntax()
+                    .descendants()
+                    .any(|n| n.kind() == SyntaxKind::EditingMarker)
             );
         }
     }

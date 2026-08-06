@@ -8,14 +8,31 @@ use crate::syntax::{LojbanLanguage, SyntaxKind};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Start(SyntaxKind),
-    Token { kind: SyntaxKind, token_index: u32 },
+    Token {
+        kind: SyntaxKind,
+        token_index: u32,
+    },
     Finish,
-    Error { token_index: Option<u32> },
+    Error {
+        token_index: Option<u32>,
+        kind: ErrorKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    UnexpectedToken,
+    ExpectedSelbri,
+    ExpectedSumti,
+    ExpectedBridi,
+    ExpectedCmevla,
+    SyntaxError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
-    pub message: String,
+    pub kind: ErrorKind,
+    pub found: Option<TokenKind>,
     pub range: crate::lexer::TextRange,
 }
 
@@ -60,15 +77,15 @@ pub fn build_green(
                 }
             }
             Event::Finish => builder.finish_node(),
-            Event::Error { token_index } => {
-                let (message, range, text) = token_index
+            Event::Error { token_index, kind } => {
+                let (range, found, text) = token_index
                     .and_then(|index| {
                         tokens
                             .get(index as usize)
-                            .map(|token| ("syntax error".to_string(), token.range, token.text))
+                            .map(|token| (token.range, Some(token.kind), token.text))
                     })
-                    .unwrap_or_else(|| ("syntax error".to_string(), SourceRange::new(0, 0), ""));
-                errors.push(ParseError { message, range });
+                    .unwrap_or_else(|| (SourceRange::new(0, 0), None, ""));
+                errors.push(ParseError { kind, found, range });
                 builder.start_node(SyntaxKind::Error.into());
                 if !text.is_empty() {
                     builder.token(SyntaxKind::Invalid.into(), text);
@@ -109,6 +126,7 @@ fn event_for_token(index: u32, token: LexToken<'_>) -> Event {
     if token.kind == TokenKind::Invalid {
         Event::Error {
             token_index: Some(index),
+            kind: ErrorKind::UnexpectedToken,
         }
     } else {
         Event::Token {
