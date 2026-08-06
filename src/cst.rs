@@ -29,6 +29,18 @@ impl Parse {
     pub fn syntax(&self) -> SyntaxNode<LojbanLanguage> {
         SyntaxNode::new_root(self.green.clone())
     }
+
+    pub fn ast(&self) -> crate::ast::Text {
+        crate::ast::Text(self.syntax())
+    }
+
+    pub fn semantic_model(&self) -> crate::semantic::SemanticModel {
+        crate::semantic::SemanticModel::new(self.syntax())
+    }
+
+    pub fn diagnostics(&self) -> Vec<crate::features::Diagnostic> {
+        crate::features::diagnostics(self)
+    }
 }
 
 /// Convert parser events into a rowan tree. Error events are represented as

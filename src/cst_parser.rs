@@ -278,9 +278,11 @@ impl<'a> Parser<'a> {
         if self.current_text() == Some("li") {
             self.emit_current();
             self.parse_mex();
-            if self.current_text() == Some("lo'o") {
+            if self.is_one_of(&["lo'o", "loho"]) {
                 self.emit_current();
             }
+        } else if self.current_text() == Some("vei") {
+            self.parse_grouped_mex("ve'o");
         } else if self
             .current_text()
             .is_some_and(|s| matches!(s, "le" | "lo"))
@@ -337,25 +339,102 @@ impl<'a> Parser<'a> {
 
     fn parse_mex(&mut self) {
         self.start(SyntaxKind::Mex);
-        let mut operand = true;
-        while self.pos < self.tokens.len() {
+        self.parse_mex_expression(0);
+        self.finish();
+    }
+
+    fn parse_mex_expression(&mut self, precedence: u8) {
+        self.skip_trivia();
+        let Some(text) = self.current_text().map(str::to_owned) else {
+            return;
+        };
+
+        // Prefix parselet
+        if text == "vei" {
+            self.parse_grouped_mex("ve'o");
+        } else if text == "fu'a" {
+            self.parse_reverse_polish_expression();
+        } else if text == "pe'ho" {
+            self.parse_forethought_expression();
+        } else if matches!(text.as_str(), "maho" | "nihe" | "mohe" | "nahu") {
+            self.start(SyntaxKind::PrefixMex);
+            self.emit_current();
             self.skip_trivia();
-            let Some(text) = self.current_text() else {
+            match text.as_str() {
+                "nihe" | "nahu" => self.parse_selbri(),
+                "mohe" => self.parse_sumti(),
+                _ => self.parse_mex_expression(0),
+            }
+            self.consume_optional("tehu", "expected TEhU after MEX operator");
+            self.finish();
+        } else if matches!(text.as_str(), "se" | "te" | "ve" | "xe" | "na'e" | "ke") {
+            self.start(SyntaxKind::PrefixMex);
+            self.emit_current(); // Operator
+            self.skip_trivia();
+            self.parse_mex_expression(100); // High precedence for prefix
+            if text == "ke" {
+                self.consume_optional("ke'e", "expected KEhE after grouped operator");
+            }
+            self.finish();
+        } else {
+            self.parse_operand();
+        }
+
+        loop {
+            self.skip_trivia();
+            let Some(next_text) = self.current_text() else {
                 break;
             };
-            if matches!(text, "lo'o" | "i" | "gi" | "ku" | "kei") {
+
+            // Handle SA correction: skip preceding expressions
+            if next_text == "sa" {
+                self.emit_current(); // SA marks replacement of the preceding mex
+                self.skip_trivia();
+                self.parse_operand();
+                continue;
+            }
+
+            if self.is_mex_terminator(next_text) {
                 break;
             }
-            self.start(if operand {
-                SyntaxKind::Operand
+
+            if matches!(next_text, "ja" | "je" | "jo" | "ju" | "joi" | "jo'i") {
+                self.start(SyntaxKind::LogicalConnective);
+                self.emit_current();
+                self.finish();
+                self.skip_trivia();
+                self.parse_mex_expression(precedence);
+                continue;
+            }
+
+            let p = self.mex_precedence(next_text);
+            if p <= precedence {
+                break;
+            }
+
+            if next_text == "bi'e" {
+                self.start(SyntaxKind::ModifiedOperator);
+                self.emit_current(); // BIhE
+                self.skip_trivia();
+
+                let op_text = self.current_text().map(|s| s.to_string());
+                if let Some(op_text) = op_text {
+                    self.emit_current(); // The operator being modified
+
+                    let p_op = self.mex_precedence(&op_text);
+                    self.parse_mex_expression(p_op);
+                } else {
+                    self.error_at_current("expected operator after BIhE");
+                }
+
+                self.finish();
             } else {
-                SyntaxKind::MexOperator
-            });
-            self.emit_current();
-            self.finish();
-            operand = !operand;
+                self.start(SyntaxKind::BinaryExpression);
+                self.emit_current();
+                self.parse_mex_expression(p);
+                self.finish();
+            }
         }
-        self.finish();
     }
 
     fn parse_relative_clause(&mut self) {
@@ -450,7 +529,7 @@ impl<'a> Parser<'a> {
         self.current_text().is_some_and(|s| {
             matches!(
                 s,
-                "mi" | "do" | "da" | "ti" | "ta" | "tu" | "le" | "lo" | "la" | "li"
+                "mi" | "do" | "da" | "ti" | "ta" | "tu" | "le" | "lo" | "la" | "li" | "vei"
             )
         })
     }
@@ -579,6 +658,287 @@ impl<'a> Parser<'a> {
             crate::parser::recovery::error_at(&mut self.events, None);
         }
     }
+
+    fn parse_grouped_mex(&mut self, end_token: &str) {
+        self.start(SyntaxKind::GroupedMex);
+        self.emit_current(); // VEI
+        self.parse_mex_expression(0);
+        if self.current_text() == Some(end_token) {
+            self.emit_current(); // VE'O
+        }
+        self.finish();
+    }
+
+    fn parse_reverse_polish_expression(&mut self) {
+        self.start(SyntaxKind::ReversePolishExpression);
+        self.emit_current(); // FUhA
+
+        let mut operands = 0usize;
+        loop {
+            self.skip_trivia();
+            let Some(text) = self.current_text() else {
+                break;
+            };
+            if self.is_mex_terminator(text) {
+                break;
+            }
+            if self.mex_precedence(text) > 0 {
+                self.start(SyntaxKind::MexOperator);
+                self.emit_current();
+                self.finish();
+            } else {
+                self.parse_operand();
+                operands += 1;
+            }
+        }
+        if operands == 0 {
+            self.error_at_current("expected operand in reverse-polish expression");
+        }
+        self.finish();
+    }
+
+    fn parse_forethought_expression(&mut self) {
+        self.start(SyntaxKind::ForethoughtExpression);
+        self.emit_current(); // PEhO
+
+        self.skip_trivia();
+        self.emit_current(); // The operator
+
+        loop {
+            self.skip_trivia();
+            let Some(text) = self.current_text() else {
+                break;
+            };
+            if text == "ku'e" {
+                self.emit_current();
+                break;
+            }
+            if self.is_mex_terminator(text) {
+                break;
+            }
+            self.parse_operand();
+        }
+        self.finish();
+    }
+
+    fn parse_operand(&mut self) {
+        self.start(SyntaxKind::Operand);
+        self.skip_trivia();
+        let Some(text) = self.current_text() else {
+            self.finish();
+            return;
+        };
+
+        if text == "nihe" {
+            self.emit_current();
+            self.skip_trivia();
+            self.parse_selbri();
+            self.consume_optional("tehu", "expected TEhU after NIhE expression");
+        } else if text == "mohe" {
+            self.emit_current();
+            self.skip_trivia();
+            self.parse_sumti();
+            self.consume_optional("tehu", "expected TEhU after MOhE expression");
+        } else if text == "johi" {
+            self.emit_current();
+            self.skip_trivia();
+            while !self.is_one_of(&["tehu", "te'u", "tehU"])
+                && !self.is_mex_terminator_current()
+                && self.pos < self.tokens.len()
+            {
+                self.parse_mex_expression(0);
+                self.skip_trivia();
+            }
+            self.consume_optional("tehu", "expected TEhU after JOhI expression");
+            self.consume_optional("te'u", "expected TEhU after JOhI expression");
+        } else if text == "ke" {
+            self.emit_current();
+            self.skip_trivia();
+            self.parse_operand();
+            self.consume_optional("kehe", "expected KEhE after operand group");
+            self.consume_optional("ke'e", "expected KEhE after operand group");
+        } else {
+            self.parse_operand_3();
+        }
+        self.skip_trivia();
+        while self.is_operand_connective() {
+            self.start(SyntaxKind::LogicalConnective);
+            self.emit_current();
+            self.finish();
+            self.skip_trivia();
+            self.parse_operand_3();
+            self.skip_trivia();
+        }
+        self.finish();
+    }
+
+    fn parse_operand_3(&mut self) {
+        self.skip_trivia();
+        let Some(text) = self.current_text().map(str::to_owned) else {
+            return;
+        };
+
+        if text == "vei" {
+            self.parse_grouped_mex("ve'o");
+        } else if self.tokens[self.pos].kind == TokenKind::Number
+            || self.is_number_word(text.as_str())
+        {
+            self.start(SyntaxKind::Quantifier);
+            while self
+                .tokens
+                .get(self.pos)
+                .is_some_and(|t| t.kind == TokenKind::Number || self.is_number_word(t.text))
+            {
+                self.emit_current();
+                self.skip_trivia();
+            }
+            self.consume_optional("boi", "optional BOI after number");
+            self.finish();
+        } else if text == "ge" || text == "ga" || text == "go" || text == "gu" {
+            self.parse_gek_operand();
+        } else if matches!(text.as_str(), "la'e" | "lahe" | "na'e" | "nahe") {
+            self.emit_current();
+            self.skip_trivia();
+            if matches!(text.as_str(), "na'e" | "nahe") && self.current_text() == Some("bo") {
+                self.emit_current();
+            }
+            self.parse_operand();
+            self.consume_optional("lu'u", "expected LUhU after operand modifier");
+            self.consume_optional("luhu", "expected LUhU after operand modifier");
+        } else if text == "tei" {
+            self.start(SyntaxKind::Operand);
+            self.emit_current();
+            self.skip_trivia();
+            while self
+                .current_text()
+                .is_some_and(|value| value != "foi" && self.is_lerfu_word(value))
+            {
+                self.emit_current();
+                self.skip_trivia();
+            }
+            self.consume_optional("foi", "expected FOI after TEI lerfu string");
+            self.finish();
+        } else if self.is_lerfu_word(text.as_str()) {
+            self.start(SyntaxKind::Operand);
+            self.emit_current();
+            self.skip_trivia();
+            while self
+                .current_text()
+                .is_some_and(|value| self.is_lerfu_word(value))
+            {
+                self.emit_current();
+                self.skip_trivia();
+            }
+            self.finish();
+        } else {
+            self.emit_current();
+        }
+    }
+
+    fn parse_gek_operand(&mut self) {
+        self.start(SyntaxKind::GekSentence);
+        self.emit_current();
+        self.skip_trivia();
+        self.parse_operand();
+        self.skip_trivia();
+        if self.is_one_of(&["gi", "gik"]) {
+            self.emit_current();
+        }
+        self.skip_trivia();
+        self.parse_operand_3();
+        self.finish();
+    }
+
+    fn is_mex_terminator(&self, text: &str) -> bool {
+        matches!(
+            text,
+            "lo'o"
+                | "loho"
+                | "ve'o"
+                | "veho"
+                | "tehu"
+                | "te'u"
+                | "kuhe"
+                | "ku'e"
+                | "luhu"
+                | "lu'u"
+                | "boi"
+                | "moi"
+                | "kehe"
+                | "ke'e"
+        )
+    }
+
+    fn is_mex_terminator_current(&self) -> bool {
+        self.current_text()
+            .is_some_and(|text| self.is_mex_terminator(text))
+    }
+
+    fn is_number_word(&self, text: &str) -> bool {
+        matches!(
+            text,
+            "no" | "pa"
+                | "re"
+                | "ci"
+                | "vo"
+                | "mu"
+                | "xa"
+                | "ze"
+                | "bi"
+                | "so"
+                | "dau"
+                | "fei"
+                | "ga'"
+                | "pi'e"
+        )
+    }
+
+    fn is_operand_connective(&self) -> bool {
+        self.current_text()
+            .is_some_and(|text| matches!(text, "ja" | "je" | "jo" | "ju" | "joi" | "jo'i" | "ce'e"))
+    }
+
+    fn is_lerfu_word(&self, text: &str) -> bool {
+        matches!(
+            text,
+            "by" | "cy"
+                | "dy"
+                | "fy"
+                | "gy"
+                | "my"
+                | "ny"
+                | "py"
+                | "ry"
+                | "sy"
+                | "ty"
+                | "vy"
+                | "xy"
+                | "zy"
+                | "bu"
+        )
+    }
+
+    fn is_one_of(&self, values: &[&str]) -> bool {
+        self.current_text()
+            .is_some_and(|text| values.contains(&text))
+    }
+
+    fn consume_optional(&mut self, token: &str, _message: &str) {
+        if self.is_one_of(&[token]) {
+            self.emit_current();
+        }
+    }
+
+    fn mex_precedence(&self, operator: &str) -> u8 {
+        match operator {
+            "=" => 40,
+            "+" | "su'i" | "vu'u" | "fe'i" | "ju'u" | "gei" => 50,
+            "*" | "/" | "pi'i" | "fa'i" | "te'a" | "cu'a" | "va'a" | "ne'o" | "de'o" | "fe'a"
+            | "sa'o" | "re'a" | "ri'o" | "sa'i" | "pi'a" | "si'i" => 60,
+            "bi'e" => 70,
+            _ => 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -620,8 +980,66 @@ mod tests {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.syntax();
         assert!(root.descendants().any(|n| n.kind() == SyntaxKind::Mex));
-        assert!(root.descendants().any(|n| n.kind() == SyntaxKind::MexOperator));
+        assert!(
+            root.descendants()
+                .any(|n| n.kind() == SyntaxKind::BinaryExpression)
+        );
         assert_eq!(root.text().to_string(), "li 1 + 2 lo'o du");
+    }
+
+    #[test]
+    fn parses_vei_mex_as_sumti() {
+        let parsed = parse("vei 1 + 2 ve'o du");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.syntax();
+        assert!(
+            root.descendants()
+                .any(|n| n.kind() == SyntaxKind::GroupedMex)
+        );
+        assert!(
+            root.descendants()
+                .any(|n| n.kind() == SyntaxKind::BinaryExpression)
+        );
+        assert_eq!(root.text().to_string(), "vei 1 + 2 ve'o du");
+    }
+
+    #[test]
+    fn parses_reverse_polish_mex_operator_separately() {
+        let parsed = parse("li fu'a 1 2 + lo'o du");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.syntax();
+        assert!(
+            root.descendants()
+                .any(|n| n.kind() == SyntaxKind::ReversePolishExpression)
+        );
+        assert!(
+            root.descendants()
+                .any(|n| n.kind() == SyntaxKind::MexOperator)
+        );
+    }
+
+    #[test]
+    fn parses_forethought_mex() {
+        let parsed = parse("li pe'ho su'i 1 2 ku'e lo'o du");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(
+            parsed
+                .syntax()
+                .descendants()
+                .any(|n| n.kind() == SyntaxKind::ForethoughtExpression)
+        );
+    }
+
+    #[test]
+    fn parses_connected_mex_operators() {
+        let parsed = parse("li 1 ja 2 lo'o du");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(
+            parsed
+                .syntax()
+                .descendants()
+                .any(|n| n.kind() == SyntaxKind::LogicalConnective)
+        );
     }
 
     #[test]

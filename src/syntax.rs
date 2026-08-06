@@ -47,6 +47,13 @@ pub enum SyntaxKind {
     Mex,
     Operand,
     MexOperator,
+    GroupedMex,
+    ModifiedOperator,
+    PrefixMex,
+    BinaryExpression,
+    Quantifier,
+    ReversePolishExpression,
+    ForethoughtExpression,
 
     // Errors
     Error,
