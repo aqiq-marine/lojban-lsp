@@ -271,26 +271,32 @@ pub fn is_rafsi_shape(s: &str) -> bool {
 
 pub fn split_lujvo(word: &str) -> Option<Vec<String>> {
     fn is_cvv(rafsi: &str) -> bool {
-        let chars: Vec<char> = rafsi.chars().collect();
+        let hiatus = rafsi.contains('\'');
+        let chars: Vec<char> = rafsi.chars().filter(|c| *c != '\'').collect();
         matches!(
             chars.as_slice(),
             [c, v1, v2]
                 if is_consonant(*c)
                     && is_vowel(*v1)
                     && is_vowel(*v2)
-                    && is_valid_diphthong(*v1, *v2)
+                    && (hiatus || is_valid_diphthong(*v1, *v2))
         )
     }
 
     fn dfs(rest: &str, prev_was_cvv: bool, out: &mut Vec<String>) -> bool {
         if rest.is_empty() {
-            return true;
+            return out.len() >= 2;
         }
 
-        // 残り全体が gismu なら最後の要素として採用
-        if is_gismu(rest) {
+        // brivla_core: gismu or CVV-final rafsi.  A short final rafsi is
+        // accepted only after at least one initial rafsi (and is therefore
+        // not mistaken for an ordinary initial component).
+        if !out.is_empty() && (is_gismu(rest) || is_cvv(rest) || is_short_final_rafsi(rest)) {
             out.push(rest.to_string());
-            return true;
+            if dfs("", false, out) {
+                return true;
+            }
+            out.pop();
         }
 
         // y は常にハイフン
@@ -329,7 +335,9 @@ pub fn split_lujvo(word: &str) -> Option<Vec<String>> {
             }
         }
 
-        // rafsi を探索
+        // initial_rafsi: extended rafsi, y rafsi, or the unambiguous short
+        // (CVC/CCV/CVV) form.  In particular, do not consume the final
+        // component as an initial rafsi.
         for len in (3..=5).rev() {
             if rest.len() < len {
                 continue;
@@ -337,7 +345,7 @@ pub fn split_lujvo(word: &str) -> Option<Vec<String>> {
 
             let candidate = &rest[..len];
 
-            if !is_rafsi_shape(candidate) {
+            if !is_rafsi_shape(candidate) || !is_initial_component(candidate) {
                 continue;
             }
 
@@ -360,6 +368,24 @@ pub fn split_lujvo(word: &str) -> Option<Vec<String>> {
     } else {
         None
     }
+}
+
+fn is_short_final_rafsi(s: &str) -> bool {
+    let c: Vec<char> = s.chars().filter(|x| *x != '\'').collect();
+    matches!(c.as_slice(), [a, b, v] if is_consonant(*a) && is_consonant(*b)
+        && is_initial_consonant_pair(*a, *b) && is_vowel(*v))
+        || matches!(c.as_slice(), [c, v1, v2] if is_consonant(*c)
+            && is_vowel(*v1) && is_vowel(*v2) && is_valid_diphthong(*v1, *v2))
+}
+
+fn is_initial_component(s: &str) -> bool {
+    if s.ends_with('y') || s.ends_with('h') { return true; }
+    if is_gismu(s) { return true; }
+    let c: Vec<char> = s.chars().collect();
+    matches!(c.as_slice(), [a, v, b] if is_consonant(*a) && is_vowel(*v) && is_consonant(*b))
+        || matches!(c.as_slice(), [a, b, v] if is_initial_consonant_pair(*a, *b) && is_vowel(*v))
+        || (c.len() == 4 && is_consonant(c[0]) && is_vowel(c[1])
+            && is_consonant(c[2]) && is_consonant(c[3]))
 }
 
 
@@ -396,20 +422,111 @@ pub fn is_gismu(s: &str) -> bool {
 }
 
 pub fn is_cmavo(s: &str) -> bool {
-    s.len() <= 4 && s.chars().last().map_or(false, is_vowel) && !is_gismu(s)
+    // cmavo_form (the dictionary is deliberately not consulted here).  The
+    // important PEG distinction is that a word which can be a brivla is not a
+    // cmavo, even when its spelling also looks like CV/ CVV.
+    if s.is_empty() || s.contains('y') || is_brivla_shape(s) || is_gismu(s) {
+        return false;
+    }
+    let cs: Vec<char> = s.chars().collect();
+    cs.len() <= 4 && cs.last().copied().map_or(false, is_vowel)
+}
+
+fn is_brivla_shape(s: &str) -> bool {
+    let cs: Vec<char> = s.chars().collect();
+    if cs.len() < 5 || !is_vowel(*cs.last().unwrap()) {
+        return false;
+    }
+    // A brivla head must contain a legal onset/cluster and an unstressed
+    // syllable; this deliberately does not classify arbitrary foreign words.
+    cs.windows(2).any(|p| {
+        is_consonant(p[0]) && is_consonant(p[1])
+            && (is_initial_consonant_pair(p[0], p[1])
+                || is_medial_consonant_pair(p[0], p[1]))
+    })
 }
 
 pub fn is_lujvo(s: &str) -> bool {
     split_lujvo(s).is_some()
 }
 
+pub fn is_fuhivla_shape(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+
+    // fu'ivla は y を含まない
+    if s.contains('y') {
+        return false;
+    }
+
+    // 最後は母音
+    let Some(last) = s.chars().last() else {
+        return false;
+    };
+
+    if !is_vowel(last) {
+        return false;
+    }
+
+    // 少なくとも2音節
+    if s.chars().filter(|&c| is_vowel(c)).count() < 2 {
+        return false;
+    }
+
+    // ' は無視して最初の5文字を見る
+    let letters: Vec<char> = s
+        .chars()
+        .filter(|&c| c != '\'')
+        .collect();
+
+    if letters.len() < 5 {
+        return false;
+    }
+
+    // 最初の5文字
+    let first5 = &letters[..5];
+
+    // 最初の5文字に合法な子音対が存在すること
+    let mut found_cluster = false;
+
+    for pair in first5.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+
+        if is_consonant(a)
+            && is_consonant(b)
+            && (is_initial_consonant_pair(a, b)
+                || is_medial_consonant_pair(a, b))
+        {
+            found_cluster = true;
+            break;
+        }
+    }
+
+    found_cluster
+}
+
 pub fn is_fuhivla(s: &str) -> bool {
-    s.len() >= 5 && !is_gismu(s) && !is_lujvo(s) && !s.contains('y') && s.chars().any(is_vowel)
+    !is_gismu(s)
+        && !is_lujvo(s)
+        && is_fuhivla_shape(s)
+}
+
+pub fn is_brivla(s: &str) -> bool {
+    is_gismu(s)
+        || is_lujvo(s)
+        || is_fuhivla(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_brivla() {
+        assert!(is_lujvo("fagypu'o"))
+    }
 
     #[test]
     fn test_split_lujvo() {
