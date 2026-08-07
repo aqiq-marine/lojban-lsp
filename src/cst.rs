@@ -56,7 +56,9 @@ impl Parse {
     }
 
     pub fn diagnostics(&self) -> Vec<crate::features::Diagnostic> {
-        crate::features::diagnostics(self)
+        let mut diagnostics = crate::features::diagnostics(self);
+        diagnostics.extend(crate::features::pause_diagnostics(self));
+        diagnostics
     }
 }
 

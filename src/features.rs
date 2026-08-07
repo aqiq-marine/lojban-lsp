@@ -13,7 +13,12 @@ pub enum DiagnosticKind {
     MissingTerminator,
     UnexpectedToken,
     SyntaxError,
+    UnknownWord,
+    PauseWarning,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagnosticCategory { Syntax, Pause, UnknownWord, Style }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExpectedRule {
@@ -31,9 +36,12 @@ pub enum ExpectedRule {
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub kind: DiagnosticKind,
+    pub category: DiagnosticCategory,
     pub code: &'static str,
     pub message: String,
     pub range: rowan::TextRange,
+    /// Reserved for future pause/style code actions.
+    pub replacement: Option<String>,
 }
 
 pub fn diagnostics(parse: &Parse) -> Vec<Diagnostic> {
@@ -62,12 +70,45 @@ pub fn diagnostics(parse: &Parse) -> Vec<Diagnostic> {
                     | crate::cst::ErrorKind::ExpectedCmevla => DiagnosticKind::ExpectedToken,
                     crate::cst::ErrorKind::SyntaxError => DiagnosticKind::SyntaxError,
                 },
+                category: DiagnosticCategory::Syntax,
                 code,
                 message: format!("{expected}{found}"),
                 range: crate::cst::rowan_range(error.range),
+                replacement: None,
             }
         })
         .collect()
+}
+
+/// Pause rules deliberately live outside the parser.  The parser only needs
+/// the lossless token stream; this pass can therefore evolve independently
+/// and provide fixes without making completion/hover depend on punctuation.
+pub fn pause_diagnostics(parse: &Parse) -> Vec<Diagnostic> {
+    use crate::syntax::SyntaxKind;
+    let tokens: Vec<_> = parse.syntax().descendants_with_tokens().filter_map(|element| {
+        element.into_token().filter(|token| token.kind() != SyntaxKind::Whitespace && token.kind() != SyntaxKind::Newline)
+    }).collect();
+    let mut result = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.text() == "i" {
+            let has_pause = index > 0 && tokens[index - 1].kind() == SyntaxKind::Pause;
+            if !has_pause {
+                result.push(Diagnostic { kind: DiagnosticKind::PauseWarning, category: DiagnosticCategory::Pause,
+                    code: "LOJ200", message: "Missing pause before sentence connective.".into(),
+                    range: token.text_range(), replacement: Some(".i".into()) });
+            }
+        }
+        if token.text() == "la" {
+            if let Some(next) = tokens.get(index + 1) {
+                if next.kind() == SyntaxKind::Word && (index + 1 == 0 || tokens[index + 1 - 1].kind() != SyntaxKind::Pause) {
+                    result.push(Diagnostic { kind: DiagnosticKind::PauseWarning, category: DiagnosticCategory::Pause,
+                        code: "LOJ201", message: "Missing pause before cmevla.".into(),
+                        range: next.text_range(), replacement: Some(format!(".{}", next.text())) });
+                }
+            }
+        }
+    }
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -77,12 +118,27 @@ pub struct CompletionContext<'a> {
     pub current: Option<Node>,
     pub parent_node: Option<Node>,
     pub expected: Vec<ExpectedRule>,
+    pub prefix: String,
+    pub mode: CompletionMode,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionMode { Automatic, Invoked }
 
 pub fn completion_context<'a>(
     ast: &'a Text,
     model: &'a SemanticModel,
     offset: u32,
+) -> CompletionContext<'a> {
+    completion_context_with(ast, model, offset, "", CompletionMode::Automatic)
+}
+
+pub fn completion_context_with<'a>(
+    ast: &'a Text,
+    model: &'a SemanticModel,
+    offset: u32,
+    prefix: impl Into<String>,
+    mode: CompletionMode,
 ) -> CompletionContext<'a> {
     let current_node = ast::token_at(model.root(), offset).and_then(|t| t.parent());
     let parent_node = current_node.as_ref().and_then(|n| n.parent());
@@ -104,6 +160,8 @@ pub fn completion_context<'a>(
         current: current_node,
         parent_node,
         expected,
+        prefix: prefix.into(),
+        mode,
     }
 }
 
@@ -138,5 +196,20 @@ mod tests {
         let ast = quoted.ast();
         let context = completion_context(&ast, &model, 11);
         assert!(context.expected.contains(&ExpectedRule::Quote));
+    }
+
+    #[test]
+    fn pause_is_an_editor_warning_not_a_parse_error() {
+        let missing_connective_pause = parse("i mi klama", ParserOptions::default());
+        assert!(missing_connective_pause.errors.is_empty());
+        assert!(missing_connective_pause.diagnostics().iter().any(|d| {
+            d.kind == DiagnosticKind::PauseWarning && d.message.contains("sentence connective")
+        }));
+
+        let missing_name_pause = parse("la alis.", ParserOptions::default());
+        assert!(missing_name_pause.semantic_model().nodes().any(|n| n.node.text().to_string().contains("alis")));
+        assert!(missing_name_pause.diagnostics().iter().any(|d| {
+            d.kind == DiagnosticKind::PauseWarning && d.message.contains("cmevla")
+        }));
     }
 }

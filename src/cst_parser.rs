@@ -31,9 +31,13 @@ pub fn parse(source: &str, options: ParserOptions) -> Parse {
     // Sentence-initial `.i` is one of the grammar positions where a pause
     // is explicitly permitted. Keep the pause in the CST, but consume it
     // together with the connective rather than treating it as trivia.
+    // A pause is optional syntax.  Consume the sentence connective in either
+    // spelling so an unfinished document (`i mi ...`) remains parseable.
     if p.at_pause() && p.peek_text(1) == Some("i") {
         p.emit_current();
         p.skip_trivia();
+    }
+    if p.current_text() == Some("i") {
         p.emit_current();
         p.skip_trivia();
     }
@@ -469,8 +473,20 @@ impl<'a> Parser<'a> {
         self.emit_current();
         self.skip_trivia();
         while self.pos < self.tokens.len() {
-            if self.current_text() == Some("ku") {
-                self.emit_current();
+            // A relative clause may be terminated by KU, but when its
+            // predicate is followed by the main bridi's CU, CU is the
+            // boundary and must remain available to parse_bridi.
+            if self
+                .current_text()
+                .is_some_and(|text| matches!(text, "ku" | "cu" | "i" | "gi"))
+            {
+                if self.current_text() != Some("cu")
+                    && !self
+                        .current_text()
+                        .is_some_and(|text| matches!(text, "i" | "gi"))
+                {
+                    self.emit_current();
+                }
                 break;
             }
             if self.tokens[self.pos].kind == TokenKind::Eof {
@@ -1259,6 +1275,30 @@ mod tests {
                 .any(|n| n.kind() == SyntaxKind::RelativeClause)
         );
         assert!(root.descendants().any(|n| n.kind() == SyntaxKind::Negation));
+    }
+
+    #[test]
+    fn parses_two_sentences_with_poi() {
+        let parsed = parse(
+            ".i mi badri lo nu le ninmu ku morsi kei ku .i le nanmu poi klama le zarci cu citka lo plise",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    
+        let root = parsed.syntax();
+    
+        assert_eq!(
+            root.descendants()
+                .filter(|n| n.kind() == SyntaxKind::RelativeClause)
+                .count(),
+            1
+        );
+    
+        assert_eq!(
+            root.descendants()
+                .filter(|n| n.kind() == SyntaxKind::Sentence)
+                .count(),
+            2
+        );
     }
 
     #[test]

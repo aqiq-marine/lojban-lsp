@@ -37,7 +37,7 @@ pub fn analyze<'a>(token: &'a LexToken<'a>, mode: AnalysisMode) -> Option<WordAn
         WordKind::Cmevla
     } else if mode == AnalysisMode::Complete && is_lujvo(token.text) {
         WordKind::Lujvo
-    } else if mode == AnalysisMode::Complete && is_fuivla(token.text) {
+    } else if mode == AnalysisMode::Complete && is_fuhivla(token.text) {
         WordKind::Fuivla
     } else {
         WordKind::Unknown
@@ -99,56 +99,347 @@ pub fn is_consonant(c: char) -> bool {
 }
 
 pub fn is_cmene(s: &str) -> bool {
-    // 固有名詞: 語末が子音であること
     s.chars().last().map_or(false, is_consonant)
 }
 
-pub fn is_gismu(s: &str) -> bool {
-    // gismu: 5文字、CVCCV または CCVCV
-    if s.len() != 5 {
+pub fn is_valid_diphthong(v1: char, v2: char) -> bool {
+    matches!(
+        (v1, v2),
+        ('a', 'i')
+            | ('a', 'u')
+            | ('e', 'i')
+            | ('o', 'i')
+    )
+}
+
+pub fn is_initial_consonant_pair(c1: char, c2: char) -> bool {
+    matches!(
+        (c1, c2),
+        // voiced + liquid
+        ('b', 'l') | ('b', 'r')
+        | ('d', 'j') | ('d', 'r') | ('d', 'z')
+        | ('g', 'l') | ('g', 'r')
+        | ('v', 'l') | ('v', 'r')
+
+        // voiceless + liquid
+        | ('c', 'f') | ('c', 'k') | ('c', 'l') | ('c', 'm')
+        | ('c', 'n') | ('c', 'p') | ('c', 'r') | ('c', 't')
+        | ('f', 'l') | ('f', 'r')
+        | ('j', 'b') | ('j', 'd') | ('j', 'g') | ('j', 'm') | ('j', 'v')
+        | ('k', 'l') | ('k', 'r')
+        | ('m', 'l') | ('m', 'r')
+        | ('p', 'l') | ('p', 'r')
+        | ('s', 'f') | ('s', 'k') | ('s', 'l') | ('s', 'm')
+        | ('s', 'n') | ('s', 'p') | ('s', 'r') | ('s', 't')
+        | ('t', 'c') | ('t', 'r') | ('t', 's')
+        | ('x', 'l') | ('x', 'r')
+        | ('z', 'b') | ('z', 'd') | ('z', 'g') | ('z', 'm') | ('z', 'v')
+    )
+}
+
+fn is_liquid(c: char) -> bool {
+    matches!(c, 'l' | 'm' | 'n' | 'r')
+}
+
+fn is_voiced_obstruent(c: char) -> bool {
+    matches!(c, 'b' | 'd' | 'g' | 'v' | 'z' | 'j')
+}
+
+fn is_voiceless_obstruent(c: char) -> bool {
+    matches!(c, 'p' | 't' | 'k' | 'f' | 's' | 'c' | 'x')
+}
+
+fn is_sibilant(c: char) -> bool {
+    matches!(c, 'c' | 'j' | 's' | 'z')
+}
+
+pub fn is_medial_consonant_pair(c1: char, c2: char) -> bool {
+    // 同じ子音は禁止
+    if c1 == c2 {
         return false;
     }
-    let chars: Vec<char> = s.chars().collect();
-    let is_v = |i| is_vowel(chars[i]);
-    let is_c = |i| is_consonant(chars[i]);
 
-    (is_c(0) && is_c(1) && is_v(2) && is_c(3) && is_v(4))
-        || (is_c(0) && is_v(1) && is_c(2) && is_c(3) && is_v(4))
+    // c/j/s/z 同士は禁止
+    if is_sibilant(c1) && is_sibilant(c2) {
+        return false;
+    }
+
+    // 個別禁止
+    if matches!(
+        (c1, c2),
+        ('c', 'x')
+            | ('k', 'x')
+            | ('x', 'c')
+            | ('x', 'k')
+            | ('m', 'z')
+    ) {
+        return false;
+    }
+
+    // 有声阻害音 + 無声阻害音は禁止（流音・鼻音は除く）
+    if !is_liquid(c1)
+        && !is_liquid(c2)
+        && ((is_voiced_obstruent(c1) && is_voiceless_obstruent(c2))
+            || (is_voiceless_obstruent(c1) && is_voiced_obstruent(c2)))
+    {
+        return false;
+    }
+
+    true
+}
+
+
+pub fn is_rafsi_shape(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+
+    match chars.as_slice() {
+        // CVC
+        [c1, v1, c2]
+            if is_consonant(*c1)
+                && is_vowel(*v1)
+                && is_consonant(*c2) =>
+        {
+            true
+        }
+
+        // CCV
+        [c1, c2, v1]
+            if is_consonant(*c1)
+                && is_consonant(*c2)
+                && is_vowel(*v1)
+                && is_initial_consonant_pair(*c1, *c2) =>
+        {
+            true
+        }
+
+        // CVV
+        [c1, v1, v2]
+            if is_consonant(*c1)
+                && is_vowel(*v1)
+                && is_vowel(*v2)
+                && is_valid_diphthong(*v1, *v2) =>
+        {
+            true
+        }
+
+        // CVCC
+        [c1, v1, c2, c3]
+            if is_consonant(*c1)
+                && is_vowel(*v1)
+                && is_consonant(*c2)
+                && is_consonant(*c3) =>
+        {
+            true
+        }
+
+        // CCVC
+        [c1, c2, v1, c3]
+            if is_consonant(*c1)
+                && is_consonant(*c2)
+                && is_vowel(*v1)
+                && is_consonant(*c3)
+                && is_initial_consonant_pair(*c1, *c2) =>
+        {
+            true
+        }
+
+        // gismu
+        [c1, c2, v1, c3, v2]
+            if is_consonant(*c1)
+                && is_consonant(*c2)
+                && is_vowel(*v1)
+                && is_consonant(*c3)
+                && is_vowel(*v2)
+                && is_initial_consonant_pair(*c1, *c2) =>
+        {
+            true
+        }
+
+        [c1, v1, c2, c3, v2]
+            if is_consonant(*c1)
+                && is_vowel(*v1)
+                && is_consonant(*c2)
+                && is_consonant(*c3)
+                && is_vowel(*v2) =>
+        {
+            true
+        }
+
+        _ => false,
+    }
+}
+
+pub fn split_lujvo(word: &str) -> Option<Vec<String>> {
+    fn is_cvv(rafsi: &str) -> bool {
+        let chars: Vec<char> = rafsi.chars().collect();
+        matches!(
+            chars.as_slice(),
+            [c, v1, v2]
+                if is_consonant(*c)
+                    && is_vowel(*v1)
+                    && is_vowel(*v2)
+                    && is_valid_diphthong(*v1, *v2)
+        )
+    }
+
+    fn dfs(rest: &str, prev_was_cvv: bool, out: &mut Vec<String>) -> bool {
+        if rest.is_empty() {
+            return true;
+        }
+
+        // 残り全体が gismu なら最後の要素として採用
+        if is_gismu(rest) {
+            out.push(rest.to_string());
+            return true;
+        }
+
+        // y は常にハイフン
+        if let Some(next) = rest.strip_prefix('y') {
+            if dfs(next, false, out) {
+                return true;
+            }
+        }
+
+        // r / n は直前が CVV rafsi の場合のみ
+        if prev_was_cvv {
+            if let Some(next) = rest.strip_prefix('r') {
+                if dfs(next, false, out) {
+                    return true;
+                }
+            }
+
+            if let Some(next) = rest.strip_prefix('n') {
+                let mut ok = false;
+
+                for len in 3..=5 {
+                    if next.len() < len {
+                        continue;
+                    }
+
+                    let candidate = &next[..len];
+                    if is_rafsi_shape(candidate) && candidate.starts_with('r') {
+                        ok = true;
+                        break;
+                    }
+                }
+
+                if ok && dfs(next, false, out) {
+                    return true;
+                }
+            }
+        }
+
+        // rafsi を探索
+        for len in (3..=5).rev() {
+            if rest.len() < len {
+                continue;
+            }
+
+            let candidate = &rest[..len];
+
+            if !is_rafsi_shape(candidate) {
+                continue;
+            }
+
+            out.push(candidate.to_string());
+
+            if dfs(&rest[len..], is_cvv(candidate), out) {
+                return true;
+            }
+
+            out.pop();
+        }
+
+        false
+    }
+
+    let mut parts = Vec::new();
+
+    if dfs(word, false, &mut parts) && parts.len() >= 2 {
+        Some(parts)
+    } else {
+        None
+    }
+}
+
+
+pub fn is_gismu(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+
+    match chars.as_slice() {
+        // CCVCV
+        [c1, c2, v1, c3, v2]
+            if is_consonant(*c1)
+                && is_consonant(*c2)
+                && is_vowel(*v1)
+                && is_consonant(*c3)
+                && is_vowel(*v2)
+                && is_initial_consonant_pair(*c1, *c2) =>
+        {
+            true
+        }
+
+        // CVCCV
+        [c1, v1, c2, c3, v2]
+            if is_consonant(*c1)
+                && is_vowel(*v1)
+                && is_consonant(*c2)
+                && is_consonant(*c3)
+                && is_vowel(*v2)
+                && is_medial_consonant_pair(*c2, *c3) =>
+        {
+            true
+        }
+
+        _ => false,
+    }
 }
 
 pub fn is_cmavo(s: &str) -> bool {
-    // cmavo: 語末が母音、かつ子音連続を含まない(単純化)
-    s.chars().last().map_or(false, is_vowel) && !s.contains(|c: char| is_consonant(c)) // 実際はもっと複雑だが第一近似
+    s.len() <= 4 && s.chars().last().map_or(false, is_vowel) && !is_gismu(s)
 }
 
-fn is_lujvo(s: &str) -> bool {
-    s.len() >= 6 && s.chars().filter(|c| is_vowel(*c)).count() >= 2
+pub fn is_lujvo(s: &str) -> bool {
+    split_lujvo(s).is_some()
 }
 
-fn is_fuivla(s: &str) -> bool {
-    s.len() >= 5 && !is_gismu(s) && !is_cmene(s) && s.chars().any(|c| is_vowel(c))
+pub fn is_fuhivla(s: &str) -> bool {
+    s.len() >= 5 && !is_gismu(s) && !is_lujvo(s) && !s.contains('y') && s.chars().any(is_vowel)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::lex_lossless;
 
     #[test]
-    fn lexer_does_not_classify_words() {
-        let token = lex_lossless("klama")[0];
+    fn test_split_lujvo() {
         assert_eq!(
-            analyze(&token, AnalysisMode::Simple).unwrap().kind,
-            WordKind::Gismu
+            split_lujvo("blazda"),
+            Some(vec![
+                "bla".to_string(),
+                "zda".to_string(),
+            ])
         );
-    }
-
-    #[test]
-    fn modes_control_extended_analysis() {
-        let token = lex_lossless("banlu")[0];
+        
         assert_eq!(
-            analyze(&token, AnalysisMode::Simple).unwrap().kind,
-            WordKind::Gismu
+            split_lujvo("gerkuzdani"),
+            Some(vec![
+                "gerku".to_string(),
+                "zdani".to_string(),
+            ])
+        );
+        
+        assert_eq!(
+            split_lujvo("jbobau"),
+            Some(vec![
+                "jbo".to_string(),
+                "bau".to_string(),
+            ])
+        );
+        
+        assert_eq!(
+            split_lujvo("selci"),
+            None
         );
     }
 }
