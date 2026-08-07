@@ -3,6 +3,10 @@ name = "lojban-lsp"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "lojban-lsp"
+path = "src/main.rs"
+
 [dependencies]
 rowan = "0.17.0"
 tower-lsp = "0.20.0"
